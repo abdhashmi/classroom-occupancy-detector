@@ -12,8 +12,8 @@ from agent import ClassroomAgent
 from classrooms import classrooms
 from history_dashboard import render_occupancy_history
 from occupancy_tracker import OccupancyTracker
-from room_recommender import recommend_rooms
-from timetable import get_schedule
+from availability_service import search_availability
+from timetable import timetable as timetable_entries
 
 
 st.set_page_config(
@@ -84,9 +84,20 @@ tracker = st.session_state.occupancy_tracker
 with st.sidebar:
     st.header("Configuration")
     room = st.selectbox("Select classroom", list(classrooms.keys()))
+    weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    today_name = datetime.now().strftime("%A")
+    default_day_index = weekdays.index(today_name) if today_name in weekdays else 0
+    analysis_day = st.selectbox(
+        "Timetable weekday",
+        weekdays,
+        index=default_day_index,
+        key="occupancy_analysis_day",
+        help="Select the weekday to look up the room's S/R/T timetable entry.",
+    )
     analysis_time = st.time_input(
         "Evaluation time",
         value=datetime.now().time().replace(second=0, microsecond=0),
+        key="occupancy_analysis_time",
     )
     confidence = st.slider(
         "Detection confidence", 0.10, 0.70, 0.30, 0.05
@@ -194,8 +205,14 @@ else:
 if source_available and count is not None:
     room_info = classrooms[room]
     selected_time = analysis_time.strftime("%H:%M")
-    schedule = get_schedule(room, selected_time)
-    scheduled = schedule is not None
+    matching_schedules = [
+        entry for entry in timetable_entries
+        if entry["room"] == room
+        and entry["day"] == analysis_day
+        and entry["start"] <= selected_time < entry["end"]
+    ]
+    schedule = matching_schedules[0] if matching_schedules else None
+    scheduled = bool(matching_schedules)
 
     observation_age = (
         datetime.now() - observation_timestamp
@@ -214,13 +231,7 @@ if source_available and count is not None:
         fresh=fresh,
     )
 
-    expected = schedule["expected_students"] if schedule else None
-    attendance_status = (
-        agent.check_attendance(count, expected)
-        if schedule
-        else "NO_CLASS_SCHEDULED"
-    )
-
+    expected = schedule.get("expected_students") if schedule else None
     st.subheader(f"Classroom: {room}")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("People detected", count)
@@ -253,12 +264,40 @@ if source_available and count is not None:
         st.write(f"**Building:** {room_info['building']}")
         st.write(f"**Floor:** {room_info['floor']}")
         st.write(f"**Room type:** {room_info['type']}")
+        st.write(f"**Timetable weekday:** {analysis_day}")
+        st.write(f"**Evaluation time:** {selected_time}")
         st.write(
             f"**Timetable:** "
             f"{'Class scheduled' if scheduled else 'No class scheduled'}"
         )
         st.write(f"**Current state:** {state}")
-        st.write(f"**Attendance check:** {attendance_status}")
+        st.subheader("Scheduled class details")
+        if matching_schedules:
+            for class_entry in matching_schedules:
+                class_kind = (
+                    "Laboratory (Lab)"
+                    if class_entry["type"] == "laboratory"
+                    else "Theory (Classroom)"
+                )
+                st.write(f"**Section:** {class_entry['section']}")
+                st.write(
+                    f"**Subject:** {class_entry['subject']} "
+                    f"({class_entry['subject_code']})"
+                )
+                st.write(
+                    f"**Teacher:** {class_entry['teacher'] or 'Not listed in timetable'}"
+                )
+                st.write(f"**Class type:** {class_kind}")
+                st.write(
+                    f"**Scheduled time:** {class_entry['start']}–{class_entry['end']}"
+                )
+                if len(matching_schedules) > 1:
+                    st.divider()
+        else:
+            st.info(
+                f"No S/R/T class is listed for {room} on {analysis_day} "
+                f"at {selected_time}."
+            )
 
         if state == "UNKNOWN":
             st.warning(
@@ -281,128 +320,223 @@ if source_available and count is not None:
                 "at the selected evaluation time."
             )
 
-        if schedule:
-            difference = expected - count
-            if difference > 10:
-                st.warning(
-                    f"{difference} fewer people detected than expected."
-                )
-            elif difference < -10:
-                st.warning(
-                    f"{abs(difference)} more people detected than expected."
-                )
+        if schedule and expected is not None:
+            absent_count = max(expected - count, 0)
+            present_col, absent_col = st.columns(2)
+            present_col.metric("Present", count)
+            absent_col.metric("Absent", absent_count)
 else:
     st.info("Start the webcam or upload an image to analyze occupancy.")
-    st.subheader("Registered Classrooms")
-    for room_id, info in classrooms.items():
-        st.write(
-            f"**{room_id}** — {info['building']}, Floor {info['floor']}, "
-            f"Capacity {info['capacity']}, Type: {info['type']}"
-        )
 
 st.divider()
-st.header("Alternative Classroom Recommendations")
-st.write(
-    "Monitored rooms show detected occupancy and remaining seats. Rooms without "
-    "a fresh observation are still listed when otherwise eligible, but are "
-    "marked UNVERIFIED because their current occupancy is unknown."
+st.header("Classroom Availability Search")
+st.caption(
+    "Search a one-hour slot Monday-Friday. Timetable conflicts are checked "
+    "for sections S, R, and T. Rooms absent from the timetable are eligible "
+    "for consideration, but camera evidence may still be missing or stale."
 )
 
-col_a, col_b = st.columns(2)
-with col_a:
+search_col1, search_col2, search_col3, search_col4 = st.columns(4)
+with search_col1:
+    search_day = st.selectbox(
+        "Requested weekday",
+        ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        index=None,
+        placeholder="Select the day",
+        key="availability_day",
+    )
+with search_col2:
+    preferred_search_room = st.selectbox(
+        "Preferred classroom",
+        list(classrooms.keys()),
+        index=None,
+        placeholder="Search or select classroom",
+        key="availability_preferred_room",
+    )
+with search_col3:
+    search_start_text = st.text_input(
+        "One-hour slot starts at",
+        value="",
+        placeholder="Enter time (HH:MM)",
+        key="availability_start_text",
+    )
+with search_col4:
     required_capacity = st.number_input(
-        "Required seating capacity",
+        "Required capacity",
         min_value=1,
         max_value=500,
         value=35,
         step=1,
-    )
-with col_b:
-    room_types = ["classroom", "laboratory"]
-    required_type = st.selectbox(
-        "Required room type",
-        room_types,
-        index=room_types.index(classrooms[room]["type"]),
-        key="recommendation_type",
+        key="availability_capacity",
     )
 
-if st.button("Find Alternative Rooms", type="primary"):
-    now = datetime.now()
-    observed_counts = {}
-    unknown_rooms = []
+room_types = ["classroom", "laboratory"]
+required_type = st.selectbox(
+    "Required room type",
+    room_types,
+    index=None,
+    placeholder="Select room type",
+    key="availability_room_type",
+)
 
-    for room_id in classrooms:
-        observation = tracker.get_observation(room_id)
-        if observation is None or not tracker.is_recent(
-            room_id, max_age_seconds=300, now=now
-        ):
-            unknown_rooms.append(room_id)
-            continue
-        observed_counts[room_id] = observation["count"]
+if st.button("Search Availability", type="primary"):
+    if not search_day:
+        st.error("Select a weekday.")
+        st.stop()
+    if not preferred_search_room:
+        st.error("Search for or select a preferred classroom.")
+        st.stop()
+    if not search_start_text.strip():
+        st.error("Enter a start time in HH:MM format.")
+        st.stop()
+    if not required_type:
+        st.error("Select a room type.")
+        st.stop()
+    try:
+        search_start = datetime.strptime(search_start_text.strip(), "%H:%M").time()
+    except ValueError:
+        st.error("Invalid time. Enter it in 24-hour HH:MM format, for example 09:00 or 14:30.")
+        st.stop()
 
-    recommendations = recommend_rooms(
-        unavailable_room=room,
-        required_capacity=required_capacity,
-        required_type=required_type,
-        current_time=analysis_time.strftime("%H:%M"),
-        observed_counts=observed_counts,
+    start_dt = datetime.now().replace(
+        hour=search_start.hour,
+        minute=search_start.minute,
+        second=0,
+        microsecond=0,
     )
+    end_dt = start_dt + timedelta(hours=1)
+    start_text = start_dt.strftime("%H:%M")
+    end_text = end_dt.strftime("%H:%M")
 
-    if recommendations:
-        st.success(
-            f"Found {len(recommendations)} suitable alternative room(s)."
+    try:
+        result = search_availability(
+            preferred_room=preferred_search_room,
+            day=search_day,
+            start_time=start_text,
+            end_time=end_text,
+            required_capacity=int(required_capacity),
+            required_type=required_type,
+            tracker=tracker,
+            now=datetime.now(),
+            max_age_seconds=300,
         )
-        for index, item in enumerate(recommendations, start=1):
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+
+    st.subheader(f"Search: {search_day}, {start_text}–{end_text}")
+    st.write(
+        f"**Preferred room:** {preferred_search_room}  ·  "
+        f"**Building:** {classrooms[preferred_search_room]['building']}  ·  "
+        f"**Floor:** {classrooms[preferred_search_room]['floor']}"
+    )
+
+    if result["preferred_room_has_timetable_conflict"]:
+        st.error("The preferred room has a scheduled class during this time.")
+    else:
+        st.info("No S/R/T timetable class is recorded in the preferred room for this slot.")
+
+    st.subheader("Section-wise scheduled classes")
+    if result["scheduled_classes"]:
+        schedule_rows = [
+            {
+                "Section": entry["section"],
+                "Day": entry["day"],
+                "Time": f"{entry['start']}–{entry['end']}",
+                "Room": entry["room"],
+                "Subject": entry["subject"],
+                "Subject code": entry["subject_code"],
+                "Teacher": entry["teacher"] or "Not listed",
+                "Class type": entry["type"],
+            }
+            for entry in result["scheduled_classes"]
+        ]
+        st.dataframe(schedule_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("No S/R/T timetable classes are recorded for this time slot.")
+
+    st.subheader("Recently observed empty — best alternatives")
+    available = result["available"]
+    if available:
+        for index, item in enumerate(available, start=1):
             with st.container(border=True):
-                st.subheader(f"{index}. {item['room']}")
-
-                if item["occupancy_verified"]:
-                    st.success(
-                        "Occupancy monitored — current observation is fresh"
-                    )
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Room capacity", item["capacity"])
-                    col2.metric("Occupied seats", item["observed_count"])
-                    col3.metric("Remaining seats", item["remaining_seats"])
-                else:
-                    st.warning(
-                        "UNVERIFIED — this room has no fresh occupancy observation"
-                    )
-                    col1, col2 = st.columns(2)
-                    col1.metric("Registered room capacity", item["capacity"])
-                    col2.metric("Occupied seats", "Unknown")
-                    st.caption(
-                        "Current free seats cannot be confirmed. Verify the room "
-                        "before using it."
-                    )
-
-                st.write(f"**Building:** {item['building']}")
-                st.write(f"**Floor:** {item['floor']}")
-                st.write(f"**Room type:** {item['type']}")
-                st.write(
-                    f"**Route distance (placeholder):** "
-                    f"{item['distance_metres']} m"
-                )
-                st.write(f"**Route:** {item['route']}")
+                st.markdown(f"**{index}. {item['room']}** — {item['building']}, Floor {item['floor']}")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Capacity", item["capacity"])
+                col2.metric("Detected people", item["observed_count"])
+                col3.metric("Walking time", f"{item['walking_minutes']} min")
+                col4.metric("Seats remaining", item["remaining_seats"])
                 st.caption(
-                    "Route distances are placeholders until replaced with "
-                    "verified campus measurements."
+                    f"Latest observation: {item['observed_at'].strftime('%Y-%m-%d %H:%M:%S')} "
+                    f"({item['observation_source'] or 'source unknown'}). "
+                    f"Route estimate: {item['route']}."
                 )
     else:
-        st.warning(
-            "No alternative room meets the selected room type, capacity, "
-            "timetable, and route requirements."
-        )
-
-    other_unknown_rooms = [
-        room_id for room_id in unknown_rooms if room_id != room
-    ]
-    if other_unknown_rooms:
         st.info(
-            "Rooms with unknown or stale occupancy are included when otherwise "
-            "eligible, but marked UNVERIFIED: "
-            + ", ".join(other_unknown_rooms)
+            "No suitable alternative has both no timetable conflict and a recent "
+            "zero-person observation. Check the unverified rooms below."
         )
 
-# This is intentionally outside the recommendation button so it always renders.
-render_occupancy_history(tracker, classrooms)
+    st.subheader("Unverified alternatives")
+    unverified = result["unverified"]
+    if unverified:
+        st.warning(
+            "These rooms have no recent valid observation. They are not confirmed "
+            "available and should be checked before use."
+        )
+        unverified_rows = [
+            {
+                "Room": item["room"],
+                "Building": item["building"],
+                "Floor": item["floor"],
+                "Capacity": item["capacity"],
+                "Type": item["type"],
+                "Status": item["status"],
+                "Walking time (min)": item["walking_minutes"],
+                "Route estimate": item["route"],
+            }
+            for item in unverified
+        ]
+        st.dataframe(unverified_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("No unverified rooms match the selected capacity and room type.")
+
+    st.subheader("Recently observed occupied")
+    occupied = result["occupied"]
+    if occupied:
+        occupied_rows = [
+            {
+                "Room": item["room"],
+                "Building": item["building"],
+                "Floor": item["floor"],
+                "Capacity": item["capacity"],
+                "Detected people": item["observed_count"],
+                "Seats remaining": item["remaining_seats"],
+                "Walking time (min)": item["walking_minutes"],
+            }
+            for item in occupied
+        ]
+        st.dataframe(occupied_rows, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No matching rooms have a recent observation showing people.")
+
+    if result["excluded_by_timetable"]:
+        with st.expander("Rooms excluded because a class is scheduled"):
+            conflict_rows = []
+            for room_conflict in result["excluded_by_timetable"]:
+                for entry in room_conflict["classes"]:
+                    conflict_rows.append({
+                        "Room": room_conflict["room"],
+                        "Section": entry["section"],
+                        "Subject": entry["subject"],
+                        "Time": f"{entry['start']}–{entry['end']}",
+                        "Teacher": entry["teacher"] or "Not listed",
+                        "Class type": entry["type"],
+                    })
+            st.dataframe(conflict_rows, use_container_width=True, hide_index=True)
+
+    st.caption(
+        "Availability is based on the supplied S/R/T timetable and camera observations "
+        "no older than five minutes. It does not account for unrecorded classes, "
+        "reservations, or changes after the last observation. Walking times are estimates."
+    )

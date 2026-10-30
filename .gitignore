@@ -6,3 +6,5 @@ __pycache__/
 .vscode/
 .streamlit/secrets.toml
 yolo26n.pt
+INSTALL.txt
+#.\.venv\Scripts\Activate.ps1

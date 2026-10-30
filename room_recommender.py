@@ -1,3 +1,4 @@
+
 from classrooms import classrooms
 from timetable import get_schedule
 from campus_graph import shortest_route
@@ -14,12 +15,8 @@ def recommend_rooms(
     require_accessibility=False,
     observed_counts=None,
 ):
-    """Recommend suitable rooms, including unmonitored rooms as UNVERIFIED.
+    """Recommend rooms using occupancy, capacity, timetable, and walking time."""
 
-    `observed_counts` must contain only recent observations. Rooms with known
-    occupancy are included only when they have enough remaining seats. Rooms
-    without a fresh observation may be listed but their occupancy is unknown.
-    """
     if (
         not isinstance(required_capacity, int)
         or isinstance(required_capacity, bool)
@@ -32,27 +29,31 @@ def recommend_rooms(
     recommendations = []
 
     for room_id, info in classrooms.items():
-        if room_id == unavailable_room:
+        if room_id == unavailable_room or room_id in occupied_rooms:
             continue
-        if room_id in occupied_rooms:
-            continue
+
         if info.get("capacity", 0) < required_capacity:
             continue
+
         if info.get("type") != required_type:
             continue
+
         if required_building and info.get("building") != required_building:
             continue
+
         if required_floor is not None and info.get("floor") != required_floor:
             continue
+
         if require_accessibility and not info.get("accessible", False):
             continue
 
-        # Do not recommend rooms with a class scheduled at the evaluation time.
+        # Skip rooms that have a class at the selected time.
         if get_schedule(room_id, current_time) is not None:
             continue
 
-        route, distance = shortest_route(unavailable_room, room_id)
-        if route is None or distance is None:
+        route, walking_minutes = shortest_route(unavailable_room, room_id)
+
+        if route is None or walking_minutes is None:
             continue
 
         observed_count = observed_counts.get(room_id)
@@ -76,7 +77,9 @@ def recommend_rooms(
             "floor": info["floor"],
             "capacity": info["capacity"],
             "type": info["type"],
-            "distance_metres": distance,
+            "walking_minutes": walking_minutes,
+            # Temporary compatibility for existing tests or code.
+            "distance_metres": walking_minutes,
             "route": " -> ".join(route),
             "observed_count": observed_count,
             "occupancy_verified": is_verified,
@@ -86,8 +89,9 @@ def recommend_rooms(
     recommendations.sort(
         key=lambda item: (
             not item["occupancy_verified"],
-            item["distance_metres"],
+            item["walking_minutes"],
             item["capacity"],
         )
     )
+
     return recommendations

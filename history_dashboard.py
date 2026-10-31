@@ -3,6 +3,8 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+from occupancy_tracker import OCCUPANCY_FRESHNESS_SECONDS
+
 
 def render_occupancy_history(tracker, classrooms):
     """Render current room occupancy and historical SQLite observations."""
@@ -15,7 +17,7 @@ def render_occupancy_history(tracker, classrooms):
 
     latest = tracker.observations
     now = datetime.now()
-    freshness_seconds = 300
+    freshness_seconds = OCCUPANCY_FRESHNESS_SECONDS
 
     st.subheader("Latest status by room")
     latest_rows = []

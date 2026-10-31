@@ -1,0 +1,9 @@
+streamlit>=1.39,<2
+ultralytics>=8.3,<9
+opencv-python-headless>=4.10,<5
+numpy>=1.26,<3
+pandas>=2.2,<4
+networkx>=3.3,<4
+streamlit-webrtc>=0.47,<1
+av>=12,<17
+psycopg[binary]>=3.2,<4

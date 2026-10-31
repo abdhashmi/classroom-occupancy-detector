@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from availability_service import classes_overlapping, normalize_day, search_availability
-from occupancy_tracker import OccupancyTracker
+from occupancy_tracker import OccupancyTracker, OCCUPANCY_FRESHNESS_SECONDS
 
 
 class FakeTracker:
@@ -48,13 +48,20 @@ def test_missing_observation_is_unverified_not_available():
     assert not any(row["room"] == "VED202" for row in result["available"])
 
 
-def test_stale_observation_is_unverified():
+def test_fifteen_minute_freshness_boundary():
     now = datetime(2026, 10, 29, 12, 0)
-    tracker = FakeTracker({
-        "VED202": {"count": 0, "timestamp": now - timedelta(seconds=301), "source": "webcam"}
+    assert OCCUPANCY_FRESHNESS_SECONDS == 900
+    fresh_tracker = FakeTracker({
+        "VED202": {"count": 0, "timestamp": now - timedelta(seconds=900), "source": "webcam"}
     })
-    result = search_availability("VED226", "Tuesday", "16:00", "17:00", 35, "classroom", tracker, now=now)
-    assert any(row["room"] == "VED202" for row in result["unverified"])
+    fresh_result = search_availability("VED226", "Tuesday", "16:00", "17:00", 35, "classroom", fresh_tracker, now=now)
+    assert any(row["room"] == "VED202" for row in fresh_result["available"])
+
+    stale_tracker = FakeTracker({
+        "VED202": {"count": 0, "timestamp": now - timedelta(seconds=901), "source": "webcam"}
+    })
+    stale_result = search_availability("VED226", "Tuesday", "16:00", "17:00", 35, "classroom", stale_tracker, now=now)
+    assert any(row["room"] == "VED202" for row in stale_result["unverified"])
 
 
 def test_recent_occupied_is_not_marked_available():

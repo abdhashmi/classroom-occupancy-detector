@@ -8,6 +8,7 @@ from datetime import datetime, time
 
 from campus_graph import shortest_route
 from classrooms import classrooms
+from occupancy_tracker import OCCUPANCY_FRESHNESS_SECONDS
 from timetable import DAY_NAMES, timetable
 
 
@@ -72,7 +73,7 @@ def search_availability(
     required_type,
     tracker,
     now=None,
-    max_age_seconds=300,
+    max_age_seconds=OCCUPANCY_FRESHNESS_SECONDS,
 ):
     """Return schedule conflicts, section-wise classes, and ranked alternatives.
 
@@ -107,6 +108,13 @@ def search_availability(
     occupied = []
     excluded = []
 
+    # Fetch the latest occupancy snapshot once. A per-room query here would
+    # create dozens of sequential network round-trips against Neon.
+    if hasattr(tracker, "get_observations"):
+        latest_observations = tracker.get_observations(classrooms.keys())
+    else:
+        latest_observations = None
+
     for room_id, info in classrooms.items():
         if room_id == preferred_room:
             continue
@@ -128,7 +136,11 @@ def search_availability(
         if route is None or minutes is None:
             continue
 
-        observation = tracker.get_observation(room_id)
+        observation = (
+            latest_observations.get(room_id)
+            if latest_observations is not None
+            else tracker.get_observation(room_id)
+        )
         age_seconds = None
         fresh = False
         count = None

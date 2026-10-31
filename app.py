@@ -1,4 +1,6 @@
 import threading
+import hmac
+import os
 from datetime import datetime, timedelta
 
 import av
@@ -80,6 +82,43 @@ if "live_counts" not in st.session_state:
     st.session_state.live_counts = {}
 
 tracker = st.session_state.occupancy_tracker
+if tracker.is_shared:
+    st.caption("Occupancy history backend: shared Neon PostgreSQL")
+else:
+    st.warning(
+        "Shared database is not configured. This session is using local SQLite; "
+        "records will not sync with other users. Configure DATABASE_URL in "
+        "Streamlit secrets before publishing the app."
+    )
+
+
+def configured_secret(name):
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+write_password = configured_secret("WRITE_ACCESS_PASSWORD")
+if write_password:
+    with st.sidebar:
+        supplied_write_password = st.text_input(
+            "Monitoring write password", type="password",
+            help="Required to save new occupancy observations to the shared database.",
+        )
+    can_write_observations = hmac.compare_digest(
+        supplied_write_password, str(write_password)
+    ) if supplied_write_password else False
+else:
+    can_write_observations = False
+
+if can_write_observations:
+    st.sidebar.success("Monitoring write access enabled")
+else:
+    st.sidebar.caption("Public view mode: occupancy history is read-only")
 
 with st.sidebar:
     st.header("Configuration")
@@ -147,12 +186,13 @@ if mode == "Upload Image":
             )
 
         observation_timestamp = datetime.now()
-        tracker.update(
-            room,
-            count,
-            timestamp=observation_timestamp,
-            source="image_upload",
-        )
+        if can_write_observations:
+            tracker.update(
+                room,
+                count,
+                timestamp=observation_timestamp,
+                source="image_upload",
+            )
         source_available = True
 
 else:
@@ -186,12 +226,20 @@ else:
                 "timestamp": live_timestamp,
             }
 
-            tracker.update(
-                room,
-                live_count,
-                timestamp=live_timestamp,
-                source="webcam",
-            )
+            if can_write_observations:
+                last_saved = st.session_state.get("last_webcam_persisted_at")
+                should_persist = (
+                    last_saved is None
+                    or (live_timestamp - last_saved).total_seconds() >= 5
+                )
+                if should_persist:
+                    tracker.update(
+                        room,
+                        live_count,
+                        timestamp=live_timestamp,
+                        source="webcam",
+                    )
+                    st.session_state.last_webcam_persisted_at = live_timestamp
             count = live_count
             observation_timestamp = live_timestamp
             source_available = True
@@ -355,7 +403,7 @@ with search_col2:
     )
 with search_col3:
     search_start_text = st.text_input(
-        "One-hour slot starts at",
+        "Select time",
         value="",
         placeholder="Enter time (HH:MM)",
         key="availability_start_text",
@@ -432,9 +480,9 @@ if st.button("Search Availability", type="primary"):
     )
 
     if result["preferred_room_has_timetable_conflict"]:
-        st.error("The preferred room has a scheduled class during this time.")
+        st.error("Selected classroom/laboratory has a scheduled class during this time, please check alternate classrooms")
     else:
-        st.info("No S/R/T timetable class is recorded in the preferred room for this slot.")
+        st.info("Selected classroom/laboratory is available for your class at the selected time.")
 
     st.subheader("Section-wise scheduled classes")
     if result["scheduled_classes"]:
@@ -453,9 +501,9 @@ if st.button("Search Availability", type="primary"):
         ]
         st.dataframe(schedule_rows, use_container_width=True, hide_index=True)
     else:
-        st.info("No S/R/T timetable classes are recorded for this time slot.")
+        st.info("No timetable scheduled for this time slot.")
 
-    st.subheader("Recently observed empty — best alternatives")
+    st.subheader("Recently observed rooms: Best alternatives")
     available = result["available"]
     if available:
         for index, item in enumerate(available, start=1):
@@ -473,16 +521,14 @@ if st.button("Search Availability", type="primary"):
                 )
     else:
         st.info(
-            "No suitable alternative has both no timetable conflict and a recent "
-            "zero-person observation. Check the unverified rooms below."
+            "No recent observations"
         )
 
     st.subheader("Unverified alternatives")
     unverified = result["unverified"]
     if unverified:
         st.warning(
-            "These rooms have no recent valid observation. They are not confirmed "
-            "available and should be checked before use."
+            "Unverified rooms with high probability of availability during the selected time."
         )
         unverified_rows = [
             {

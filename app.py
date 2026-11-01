@@ -343,7 +343,7 @@ if source_available and count is not None:
                     st.divider()
         else:
             st.info(
-                f"No S/R/T class is listed for {room} on {analysis_day} "
+                f"No scheduled classes in {room} on {analysis_day} "
                 f"at {selected_time}."
             )
 
